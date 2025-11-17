@@ -1,0 +1,7 @@
+parent_cfg: configs/waymo_val_121.yaml
+source_path: ./data/waymo/096
+exp_name: waymo_val_096
+
+data:
+    selected_frames: [80, 180]
+

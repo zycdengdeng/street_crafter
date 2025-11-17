@@ -1,0 +1,10 @@
+parent_cfg: configs/waymo_val_121.yaml
+source_path: ./data/waymo/176
+exp_name: waymo_val_176
+
+data:
+    selected_frames: [80, 160]
+
+model:
+    nsg:
+        include_cube_map: False

@@ -1,0 +1,23 @@
+*.pyc
+.vscode
+output*
+data
+build
+diff_rasterization/diff_rast.egg-info
+diff_rasterization/dist
+tensorboard_3d
+screenshots
+ckpts
+*.ply
+*.pt
+# *.png
+*.jpg
+*.jpeg
+*.mp4
+
+video_diffusion/ckpts/
+video_diffusion/outputs/
+video_diffusion/annos/
+video_diffusion/src/
+video_diffusion/logs/
+!video_diffusion/vwm/data/
