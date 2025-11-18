@@ -1,0 +1,17 @@
+# 生成稠密深度图所需的最小依赖
+
+# 基础依赖
+numpy
+opencv-python
+tqdm
+plyfile
+imageio
+
+# PyTorch (请根据CUDA版本选择，这里是CUDA 12.1)
+# torch==2.4.0
+# torchvision==0.19.0
+
+# 从GitHub安装的依赖（需要特殊处理）
+# easyvolcap @ git+https://github.com/yunzhiy/EasyVolcap
+# diff_point_rasterization @ git+https://github.com/yunzhiy/diff-point-rasterization
+# simple-knn (easyvolcap的依赖) - 安装easyvolcap时会自动安装

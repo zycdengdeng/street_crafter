@@ -263,18 +263,26 @@ class WaymoLiDARRenderer(object):
                     # step4: render point cloud
                     ply_render = render_pointcloud_diff_point_rasterization(c2w, ixt, valid_ply_xyz, valid_ply_feature, h, w, gpu_id, use_ndc_scale=True, scale=0.01)
                     # ply_render = render_pointcloud_pytorch3d(c2w, ixt, valid_ply_xyz, valid_ply_feature, h, w, gpu_id)
-                    ply_render_rgb, ply_render_mask = ply_render[0, ..., :3], ply_render[0, ..., 3]
+                    ply_render_rgb = ply_render[0, ..., :3]
+                    ply_render_mask = ply_render[0, ..., 3]
+                    ply_render_depth = ply_render[0, ..., 4]  # 提取深度通道
+
                     ply_render_rgb = ply_render_rgb.detach().cpu().numpy()
                     ply_render_mask = ply_render_mask.detach().cpu().numpy()
+                    ply_render_depth = ply_render_depth.detach().cpu().numpy()
 
                     image_render_save_path = os.path.join(render_save_dir, f'{str(frame).zfill(6)}_{cam}.png')
                     mask_render_save_path = os.path.join(render_save_dir, f'{str(frame).zfill(6)}_{cam}_mask.png')
+                    depth_render_save_path = os.path.join(render_save_dir, f'{str(frame).zfill(6)}_{cam}_depth.npy')
 
                     image_render = (ply_render_rgb * 255).astype(np.uint8)
                     cv2.imwrite(image_render_save_path, image_render[..., [2, 1, 0]])
 
                     mask_render = (ply_render_mask * 255).astype(np.uint8)
                     cv2.imwrite(mask_render_save_path, mask_render)
+
+                    # 保存稠密深度图 (npy格式)
+                    np.save(depth_render_save_path, ply_render_depth)
 
                     ply_render_result_rgb.append(ply_render_rgb)
 
