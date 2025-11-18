@@ -146,101 +146,45 @@ def project_3d_to_image(points_3d, intrinsic, img_h, img_w):
     return pixels, valid_mask
 
 
-def get_2d_homography(rotation_angle, intrinsic, img_h, img_w):
+def warp_image_2d(rgb, rotation_angle, side='left'):
     """
-    计算2D平面透视变换矩阵（用于天空等无深度区域）
-
-    假设场景在一个平面上，计算对应的单应矩阵
-    """
-    # 简化：使用仿射变换模拟旋转效果
-    # 中心点
-    cx, cy = intrinsic[0, 2], intrinsic[1, 2]
-
-    # 旋转中心移到图像中心
-    angle_rad = np.deg2rad(rotation_angle)
-
-    # 构建仿射变换矩阵
-    # 1. 平移到原点
-    # 2. 旋转
-    # 3. 平移回来 + 适当的水平偏移（模拟透视）
-
-    cos_a = np.cos(angle_rad)
-    sin_a = np.sin(angle_rad)
-
-    # 简单的剪切变换（模拟透视效果）
-    shear = np.tan(angle_rad * 0.3)  # 减小变形幅度
-
-    M = np.array([
-        [1, shear, -shear * cy],
-        [0, 1, 0]
-    ], dtype=np.float32)
-
-    return M
-
-
-def warp_image_with_depth(rgb, depth, intrinsic, rotation_angle, side='left'):
-    """
-    使用深度做3D引导的图像变换（混合2D+3D）
+    使用2D仿射变换模拟透视效果
 
     Args:
         rgb: [H, W, 3] RGB图像（左半或右半）
-        depth: [H, W] 深度图
-        intrinsic: [3, 3] 相机内参
         rotation_angle: 旋转角度（度）
         side: 'left' 或 'right'
 
     Returns:
         warped_rgb: [H, W, 3] 变换后的RGB
-        warped_depth: [H, W] 变换后的深度
     """
     h, w = rgb.shape[:2]
 
-    # 步骤1: 对整个图像做2D透视变换（保留天空）
-    H_2d = get_2d_homography(rotation_angle, intrinsic, h, w)
-    warped_rgb_2d = cv2.warpAffine(rgb, H_2d, (w, h),
-                                    flags=cv2.INTER_LINEAR,
-                                    borderMode=cv2.BORDER_CONSTANT,
-                                    borderValue=(0, 0, 0))
+    # 计算仿射变换矩阵
+    angle_rad = np.deg2rad(rotation_angle)
 
-    # 步骤2: 对有深度的区域做3D变换
-    points_3d_cam, pixel_coords = unproject_depth_to_3d(depth, intrinsic)
+    # 使用水平剪切模拟透视旋转效果
+    # 左半：向左倾斜（负角度 → 负剪切）
+    # 右半：向右倾斜（正角度 → 正剪切）
+    shear = np.tan(angle_rad)
 
-    if len(points_3d_cam) == 0:
-        # 如果没有深度信息，直接返回2D变换结果
-        return warped_rgb_2d, np.zeros((h, w), dtype=np.float32)
+    # 仿射变换矩阵: [1, shear, offset]
+    #                [0,   1,     0  ]
+    # offset用于控制剪切后的平移
+    center_y = h / 2
+    offset = -shear * center_y
 
-    # 获取颜色
-    colors = rgb[pixel_coords[:, 1], pixel_coords[:, 0]]  # [N, 3]
+    M = np.array([
+        [1, shear, offset],
+        [0, 1, 0]
+    ], dtype=np.float32)
 
-    # 应用旋转变换
-    R = get_rotation_matrix_z(rotation_angle)[:3, :3]
-    points_3d_rotated = points_3d_cam @ R.T  # [N, 3]
+    warped_rgb = cv2.warpAffine(rgb, M, (w, h),
+                                flags=cv2.INTER_LINEAR,
+                                borderMode=cv2.BORDER_CONSTANT,
+                                borderValue=(0, 0, 0))
 
-    # 重投影到2D
-    new_pixels, valid_mask = project_3d_to_image(
-        points_3d_rotated, intrinsic, h, w
-    )
-
-    # 步骤3: 用3D变换结果覆盖2D背景（z-buffer融合）
-    warped_rgb = warped_rgb_2d.copy()
-    warped_depth = np.zeros((h, w), dtype=np.float32)
-    depth_buffer = np.full((h, w), np.inf, dtype=np.float32)
-
-    valid_points = points_3d_rotated[valid_mask]
-    valid_pixels = new_pixels[valid_mask].astype(np.int32)
-    valid_colors = colors[valid_mask]
-    valid_depths = valid_points[:, 2]
-
-    for i in range(len(valid_pixels)):
-        u, v = valid_pixels[i]
-        d = valid_depths[i]
-
-        if 0 <= u < w and 0 <= v < h and d < depth_buffer[v, u]:
-            depth_buffer[v, u] = d
-            warped_rgb[v, u] = valid_colors[i]
-            warped_depth[v, u] = d
-
-    return warped_rgb, warped_depth
+    return warped_rgb
 
 
 def read_lidar_ply(lidar_dir, ego_poses, start_frame, end_frame):
@@ -424,21 +368,10 @@ def generate_stitched_data(scene_dir, output_dir, cam_id=0,
         # 拆分左右
         rgb_left = rgb[:, :mid]
         rgb_right = rgb[:, mid:]
-        depth_left = depth[:, :mid]
-        depth_right = depth[:, mid:]
 
-        # 调整内参（因为crop了）
-        intrinsic_left = intrinsic.copy()
-        intrinsic_right = intrinsic.copy()
-        intrinsic_right[0, 2] -= mid  # cx偏移
-
-        # 3D变换
-        warped_left, _ = warp_image_with_depth(
-            rgb_left, depth_left, intrinsic_left, -rotation_angle, 'left'
-        )
-        warped_right, _ = warp_image_with_depth(
-            rgb_right, depth_right, intrinsic_right, rotation_angle, 'right'
-        )
+        # 2D仿射变换
+        warped_left = warp_image_2d(rgb_left, -rotation_angle, 'left')
+        warped_right = warp_image_2d(rgb_right, rotation_angle, 'right')
 
         # 拼接RGB
         stitched_rgb = np.concatenate([warped_left, warped_right], axis=1)
