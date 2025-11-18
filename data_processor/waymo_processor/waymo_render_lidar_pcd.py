@@ -302,7 +302,7 @@ def main():
 
     args = parser.parse_args()
     data_dir = args.data_dir
-    scene_ids = sorted([x for x in os.listdir(data_dir)])
+    scene_ids = sorted([x for x in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, x)) and x.isdigit()])
     scene_ids = [int(x) for x in scene_ids]
     dataset_projector = WaymoLiDARRenderer(args, scene_ids)
     if args.workers == 1:
