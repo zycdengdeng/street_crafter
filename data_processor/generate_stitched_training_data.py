@@ -310,7 +310,7 @@ def render_interpolated_depth(scene_dir, frame, cam_id, rotation_angle,
     return depth_map
 
 
-def generate_stitched_data(scene_dir, output_dir, cam_id=0,
+def generate_stitched_data(scene_dir, output_dir, mode='self', cam_id=0,
                            rotation_angle=22.5, delta_frames=10):
     """
     生成拼接训练数据
@@ -318,11 +318,12 @@ def generate_stitched_data(scene_dir, output_dir, cam_id=0,
     Args:
         scene_dir: 场景目录
         output_dir: 输出目录
-        cam_id: 相机ID
+        mode: 'self' (主视角自拼接) 或 'cross' (跨相机拼接)
+        cam_id: 主相机ID (mode='self'时) 或左相机ID (mode='cross'时)
         rotation_angle: 旋转角度（一半的角度，左右各这么多）
         delta_frames: 渲染深度时聚合的帧数
     """
-    print(f"Processing scene: {scene_dir}")
+    print(f"Processing scene: {scene_dir}, mode: {mode}")
 
     # 加载标定数据
     extrinsics, intrinsics = load_calibration(scene_dir)
@@ -351,46 +352,86 @@ def generate_stitched_data(scene_dir, output_dir, cam_id=0,
     for idx in tqdm(range(num_frames), desc='Generating stitched data'):
         frame = idx
 
-        # 读取RGB和深度
-        rgb_path = os.path.join(images_dir, f'{frame:06d}_{cam_id}.png')
-        depth_path = os.path.join(dense_depth_dir, f'{frame:06d}_{cam_id}_depth.npy')
+        if mode == 'self':
+            # 主视角自拼接：CAM0左右半
+            rgb_path = os.path.join(images_dir, f'{frame:06d}_{cam_id}.png')
 
-        if not os.path.exists(rgb_path) or not os.path.exists(depth_path):
-            continue
+            if not os.path.exists(rgb_path):
+                continue
 
-        rgb = cv2.imread(rgb_path)
-        rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
-        depth = np.load(depth_path)
+            rgb = cv2.imread(rgb_path)
+            rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
 
-        h, w = rgb.shape[:2]
-        mid = w // 2
+            h, w = rgb.shape[:2]
+            mid = w // 2
 
-        # 拆分左右
-        rgb_left = rgb[:, :mid]
-        rgb_right = rgb[:, mid:]
+            # 拆分左右
+            rgb_left = rgb[:, :mid]
+            rgb_right = rgb[:, mid:]
 
-        # 2D仿射变换
-        warped_left = warp_image_2d(rgb_left, -rotation_angle, 'left')
-        warped_right = warp_image_2d(rgb_right, rotation_angle, 'right')
+            # 2D仿射变换
+            warped_left = warp_image_2d(rgb_left, -rotation_angle, 'left')
+            warped_right = warp_image_2d(rgb_right, rotation_angle, 'right')
 
-        # 拼接RGB
-        stitched_rgb = np.concatenate([warped_left, warped_right], axis=1)
+            # 拼接RGB
+            stitched_rgb = np.concatenate([warped_left, warped_right], axis=1)
+
+            # 渲染外插深度（主视角，角度0）
+            interp_angle = 0
+            gt_rgb = rgb
+
+        elif mode == 'cross':
+            # 跨相机拼接：CAM0左半 + CAM1右半
+            cam_left = cam_id  # CAM0
+            cam_right = cam_id + 1  # CAM1
+
+            rgb_left_path = os.path.join(images_dir, f'{frame:06d}_{cam_left}.png')
+            rgb_right_path = os.path.join(images_dir, f'{frame:06d}_{cam_right}.png')
+
+            if not os.path.exists(rgb_left_path) or not os.path.exists(rgb_right_path):
+                continue
+
+            rgb_left_full = cv2.imread(rgb_left_path)
+            rgb_left_full = cv2.cvtColor(rgb_left_full, cv2.COLOR_BGR2RGB)
+
+            rgb_right_full = cv2.imread(rgb_right_path)
+            rgb_right_full = cv2.cvtColor(rgb_right_full, cv2.COLOR_BGR2RGB)
+
+            h, w = rgb_left_full.shape[:2]
+            mid = w // 2
+
+            # 取CAM0左半和CAM1右半
+            rgb_left = rgb_left_full[:, :mid]
+            rgb_right = rgb_right_full[:, mid:]
+
+            # 2D仿射变换（模拟向中间看）
+            warped_left = warp_image_2d(rgb_left, -rotation_angle * 0.5, 'left')  # 变换幅度减半
+            warped_right = warp_image_2d(rgb_right, rotation_angle * 0.5, 'right')
+
+            # 拼接RGB
+            stitched_rgb = np.concatenate([warped_left, warped_right], axis=1)
+
+            # 渲染外插深度（介于CAM0和CAM1之间，22.5度）
+            interp_angle = rotation_angle
+            gt_rgb = None  # 跨相机没有ground truth
 
         # 渲染外插深度
         stitched_depth = render_interpolated_depth(
-            scene_dir, frame, cam_id, 0,  # 外插视角在中间，旋转角度为0（相对于左右的中点）
+            scene_dir, frame, cam_id, interp_angle,
             ego_poses, extrinsics, intrinsics, delta_frames
         )
 
         # 保存
-        stitched_rgb_path = os.path.join(output_dir, f'{frame:06d}_{cam_id}_stitched.png')
-        stitched_depth_path = os.path.join(output_dir, f'{frame:06d}_{cam_id}_stitched_depth.npy')
-        gt_rgb_path = os.path.join(output_dir, f'{frame:06d}_{cam_id}_gt.png')
+        suffix = 'self' if mode == 'self' else 'cross'
+        stitched_rgb_path = os.path.join(output_dir, f'{frame:06d}_{suffix}_stitched.png')
+        stitched_depth_path = os.path.join(output_dir, f'{frame:06d}_{suffix}_stitched_depth.npy')
+        gt_rgb_path = os.path.join(output_dir, f'{frame:06d}_{suffix}_gt.png') if gt_rgb is not None else None
 
         cv2.imwrite(stitched_rgb_path, cv2.cvtColor(stitched_rgb, cv2.COLOR_RGB2BGR))
         if stitched_depth is not None:
             np.save(stitched_depth_path, stitched_depth)
-        cv2.imwrite(gt_rgb_path, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+        if gt_rgb is not None:
+            cv2.imwrite(gt_rgb_path, cv2.cvtColor(gt_rgb, cv2.COLOR_RGB2BGR))
 
         # 可选：保存深度可视化
         if idx % 10 == 0 and stitched_depth is not None:
@@ -402,7 +443,7 @@ def generate_stitched_data(scene_dir, output_dir, cam_id=0,
                 depth_vis = (depth_vis * 255).astype(np.uint8)
                 depth_vis = cv2.applyColorMap(depth_vis, cv2.COLORMAP_JET)
                 depth_vis[~valid_mask] = 0
-                depth_vis_path = os.path.join(output_dir, f'{frame:06d}_{cam_id}_stitched_depth_vis.png')
+                depth_vis_path = os.path.join(output_dir, f'{frame:06d}_{suffix}_stitched_depth_vis.png')
                 cv2.imwrite(depth_vis_path, depth_vis)
 
     print(f"Done! Output saved to {output_dir}")
@@ -413,7 +454,9 @@ def main():
     parser.add_argument('--scene_dir', type=str, required=True,
                         help='Scene directory (e.g., /path/to/waymo/049)')
     parser.add_argument('--output_dir', type=str, default=None,
-                        help='Output directory (default: scene_dir/stitched_training)')
+                        help='Output directory (default: scene_dir/stitched_training_MODE)')
+    parser.add_argument('--mode', type=str, default='self', choices=['self', 'cross'],
+                        help='Stitching mode: "self" (single cam) or "cross" (cam0+cam1)')
     parser.add_argument('--cam_id', type=int, default=0,
                         help='Camera ID (default: 0)')
     parser.add_argument('--rotation_angle', type=float, default=22.5,
@@ -424,11 +467,12 @@ def main():
     args = parser.parse_args()
 
     if args.output_dir is None:
-        args.output_dir = os.path.join(args.scene_dir, 'stitched_training')
+        args.output_dir = os.path.join(args.scene_dir, f'stitched_training_{args.mode}')
 
     generate_stitched_data(
         scene_dir=args.scene_dir,
         output_dir=args.output_dir,
+        mode=args.mode,
         cam_id=args.cam_id,
         rotation_angle=args.rotation_angle,
         delta_frames=args.delta_frames
