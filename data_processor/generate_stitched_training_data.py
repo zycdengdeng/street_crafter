@@ -37,7 +37,14 @@ def load_calibration(datadir):
     for cam_file in os.listdir(intrinsics_dir):
         cam_id = int(cam_file.split('.')[0])
         int_path = os.path.join(intrinsics_dir, cam_file)
-        intrinsics[cam_id] = np.loadtxt(int_path).reshape(3, 3)
+        # 内参格式: [fx, fy, cx, cy, k1, k2, p1, p2, k3]
+        data = np.loadtxt(int_path)
+        fx, fy, cx, cy = data[0], data[1], data[2], data[3]
+        intrinsics[cam_id] = np.array([
+            [fx,  0, cx],
+            [ 0, fy, cy],
+            [ 0,  0,  1]
+        ])
 
     return extrinsics, intrinsics
 

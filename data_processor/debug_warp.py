@@ -35,7 +35,13 @@ def test_warp():
 
     # 读取内参
     intrinsic_path = f'{scene_dir}/intrinsics/{cam_id}.txt'
-    intrinsic = np.loadtxt(intrinsic_path).reshape(3, 3)
+    data = np.loadtxt(intrinsic_path)
+    fx, fy, cx, cy = data[0], data[1], data[2], data[3]
+    intrinsic = np.array([
+        [fx,  0, cx],
+        [ 0, fy, cy],
+        [ 0,  0,  1]
+    ])
 
     print(f'Intrinsic:\\n{intrinsic}')
 
