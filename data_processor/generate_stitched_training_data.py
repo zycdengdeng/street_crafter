@@ -146,9 +146,41 @@ def project_3d_to_image(points_3d, intrinsic, img_h, img_w):
     return pixels, valid_mask
 
 
+def get_2d_homography(rotation_angle, intrinsic, img_h, img_w):
+    """
+    计算2D平面透视变换矩阵（用于天空等无深度区域）
+
+    假设场景在一个平面上，计算对应的单应矩阵
+    """
+    # 简化：使用仿射变换模拟旋转效果
+    # 中心点
+    cx, cy = intrinsic[0, 2], intrinsic[1, 2]
+
+    # 旋转中心移到图像中心
+    angle_rad = np.deg2rad(rotation_angle)
+
+    # 构建仿射变换矩阵
+    # 1. 平移到原点
+    # 2. 旋转
+    # 3. 平移回来 + 适当的水平偏移（模拟透视）
+
+    cos_a = np.cos(angle_rad)
+    sin_a = np.sin(angle_rad)
+
+    # 简单的剪切变换（模拟透视效果）
+    shear = np.tan(angle_rad * 0.3)  # 减小变形幅度
+
+    M = np.array([
+        [1, shear, -shear * cy],
+        [0, 1, 0]
+    ], dtype=np.float32)
+
+    return M
+
+
 def warp_image_with_depth(rgb, depth, intrinsic, rotation_angle, side='left'):
     """
-    使用深度做3D引导的图像变换
+    使用深度做3D引导的图像变换（混合2D+3D）
 
     Args:
         rgb: [H, W, 3] RGB图像（左半或右半）
@@ -163,23 +195,34 @@ def warp_image_with_depth(rgb, depth, intrinsic, rotation_angle, side='left'):
     """
     h, w = rgb.shape[:2]
 
-    # 1. 反投影到3D
+    # 步骤1: 对整个图像做2D透视变换（保留天空）
+    H_2d = get_2d_homography(rotation_angle, intrinsic, h, w)
+    warped_rgb_2d = cv2.warpAffine(rgb, H_2d, (w, h),
+                                    flags=cv2.INTER_LINEAR,
+                                    borderMode=cv2.BORDER_CONSTANT,
+                                    borderValue=(0, 0, 0))
+
+    # 步骤2: 对有深度的区域做3D变换
     points_3d_cam, pixel_coords = unproject_depth_to_3d(depth, intrinsic)
+
+    if len(points_3d_cam) == 0:
+        # 如果没有深度信息，直接返回2D变换结果
+        return warped_rgb_2d, np.zeros((h, w), dtype=np.float32)
 
     # 获取颜色
     colors = rgb[pixel_coords[:, 1], pixel_coords[:, 0]]  # [N, 3]
 
-    # 2. 应用旋转变换
+    # 应用旋转变换
     R = get_rotation_matrix_z(rotation_angle)[:3, :3]
     points_3d_rotated = points_3d_cam @ R.T  # [N, 3]
 
-    # 3. 重投影到2D
+    # 重投影到2D
     new_pixels, valid_mask = project_3d_to_image(
         points_3d_rotated, intrinsic, h, w
     )
 
-    # 4. 渲染到图像（使用z-buffer）
-    warped_rgb = np.zeros((h, w, 3), dtype=np.uint8)
+    # 步骤3: 用3D变换结果覆盖2D背景（z-buffer融合）
+    warped_rgb = warped_rgb_2d.copy()
     warped_depth = np.zeros((h, w), dtype=np.float32)
     depth_buffer = np.full((h, w), np.inf, dtype=np.float32)
 
