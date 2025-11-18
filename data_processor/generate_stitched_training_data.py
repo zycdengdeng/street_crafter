@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-生成拼接训练数据（方案B2：3D深度引导变换）
+生成拼接训练数据（方案A：简单错位拼接）
 
 输入：主视角CAM0的RGB和深度
 输出：
-  - stitched_rgb: 拼接后的RGB
+  - stitched_rgb: 拼接后的RGB（简单水平错位）
   - stitched_depth: 外插视角的深度（重新渲染）
   - gt_rgb: 原始CAM0真值
 """
@@ -146,45 +146,31 @@ def project_3d_to_image(points_3d, intrinsic, img_h, img_w):
     return pixels, valid_mask
 
 
-def warp_image_2d(rgb, rotation_angle, side='left'):
+def stitch_with_offset(rgb_left, rgb_right, offset):
     """
-    使用2D仿射变换模拟透视效果
+    简单错位拼接（UDIS-D风格）
 
     Args:
-        rgb: [H, W, 3] RGB图像（左半或右半）
-        rotation_angle: 旋转角度（度）
-        side: 'left' 或 'right'
+        rgb_left: [H, W_half, 3] 左半图像
+        rgb_right: [H, W_half, 3] 右半图像
+        offset: 水平错位像素数（正数表示左图向右扩展，右图向左扩展）
 
     Returns:
-        warped_rgb: [H, W, 3] 变换后的RGB
+        stitched: [H, W, 3] 拼接图像（中间有gap或overlap）
     """
-    h, w = rgb.shape[:2]
+    h, w_half = rgb_left.shape[:2]
 
-    # 计算仿射变换矩阵
-    angle_rad = np.deg2rad(rotation_angle)
+    # 左图：取前 (w_half - offset) 列
+    # 右图：取后 (w_half - offset) 列
+    # 拼接后宽度为 2 * (w_half - offset) = w - 2*offset
+    # 这样中间会有gap（如果offset>0）
 
-    # 使用水平剪切模拟透视旋转效果
-    # 左半：向左倾斜（负角度 → 负剪切）
-    # 右半：向右倾斜（正角度 → 正剪切）
-    shear = np.tan(angle_rad)
+    left_crop = rgb_left[:, :w_half - offset]
+    right_crop = rgb_right[:, offset:]
 
-    # 仿射变换矩阵: [1, shear, offset]
-    #                [0,   1,     0  ]
-    # offset用于控制剪切后的平移
-    center_y = h / 2
-    offset = -shear * center_y
+    stitched = np.concatenate([left_crop, right_crop], axis=1)
 
-    M = np.array([
-        [1, shear, offset],
-        [0, 1, 0]
-    ], dtype=np.float32)
-
-    warped_rgb = cv2.warpAffine(rgb, M, (w, h),
-                                flags=cv2.INTER_LINEAR,
-                                borderMode=cv2.BORDER_CONSTANT,
-                                borderValue=(0, 0, 0))
-
-    return warped_rgb
+    return stitched
 
 
 def read_lidar_ply(lidar_dir, ego_poses, start_frame, end_frame):
@@ -311,7 +297,7 @@ def render_interpolated_depth(scene_dir, frame, cam_id, rotation_angle,
 
 
 def generate_stitched_data(scene_dir, output_dir, mode='self', cam_id=0,
-                           rotation_angle=22.5, delta_frames=10):
+                           offset=40, rotation_angle=22.5, delta_frames=10):
     """
     生成拼接训练数据
 
@@ -320,7 +306,8 @@ def generate_stitched_data(scene_dir, output_dir, mode='self', cam_id=0,
         output_dir: 输出目录
         mode: 'self' (主视角自拼接) 或 'cross' (跨相机拼接)
         cam_id: 主相机ID (mode='self'时) 或左相机ID (mode='cross'时)
-        rotation_angle: 旋转角度（一半的角度，左右各这么多）
+        offset: 错位像素数（默认40像素）
+        rotation_angle: 旋转角度（仅用于depth渲染）
         delta_frames: 渲染深度时聚合的帧数
     """
     print(f"Processing scene: {scene_dir}, mode: {mode}")
@@ -369,12 +356,8 @@ def generate_stitched_data(scene_dir, output_dir, mode='self', cam_id=0,
             rgb_left = rgb[:, :mid]
             rgb_right = rgb[:, mid:]
 
-            # 2D仿射变换
-            warped_left = warp_image_2d(rgb_left, -rotation_angle, 'left')
-            warped_right = warp_image_2d(rgb_right, rotation_angle, 'right')
-
-            # 拼接RGB
-            stitched_rgb = np.concatenate([warped_left, warped_right], axis=1)
+            # 简单错位拼接
+            stitched_rgb = stitch_with_offset(rgb_left, rgb_right, offset)
 
             # 渲染外插深度（主视角，角度0）
             interp_angle = 0
@@ -404,12 +387,8 @@ def generate_stitched_data(scene_dir, output_dir, mode='self', cam_id=0,
             rgb_left = rgb_left_full[:, :mid]
             rgb_right = rgb_right_full[:, mid:]
 
-            # 2D仿射变换（模拟向中间看）
-            warped_left = warp_image_2d(rgb_left, -rotation_angle * 0.5, 'left')  # 变换幅度减半
-            warped_right = warp_image_2d(rgb_right, rotation_angle * 0.5, 'right')
-
-            # 拼接RGB
-            stitched_rgb = np.concatenate([warped_left, warped_right], axis=1)
+            # 简单错位拼接
+            stitched_rgb = stitch_with_offset(rgb_left, rgb_right, offset)
 
             # 渲染外插深度（介于CAM0和CAM1之间，22.5度）
             interp_angle = rotation_angle
@@ -459,8 +438,10 @@ def main():
                         help='Stitching mode: "self" (single cam) or "cross" (cam0+cam1)')
     parser.add_argument('--cam_id', type=int, default=0,
                         help='Camera ID (default: 0)')
+    parser.add_argument('--offset', type=int, default=40,
+                        help='Horizontal offset in pixels for stitching misalignment (default: 40)')
     parser.add_argument('--rotation_angle', type=float, default=22.5,
-                        help='Rotation angle for each half (default: 22.5 degrees)')
+                        help='Rotation angle for depth rendering (default: 22.5 degrees)')
     parser.add_argument('--delta_frames', type=int, default=10,
                         help='Number of frames to aggregate for depth rendering (default: 10)')
 
@@ -474,6 +455,7 @@ def main():
         output_dir=args.output_dir,
         mode=args.mode,
         cam_id=args.cam_id,
+        offset=args.offset,
         rotation_angle=args.rotation_angle,
         delta_frames=args.delta_frames
     )
